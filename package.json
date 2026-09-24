@@ -1,0 +1,1 @@
+{"name":"pi-voice","version":"1.0.0","description":"Pi extension","keywords":["pi-package","pi-extension"],"license":"MIT","repository":"mohammadraufzahed/pi-voice","pi":{"extensions":["./extensions/index.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*","typebox":"*"}}
