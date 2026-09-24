@@ -11,16 +11,21 @@
  *   piper    (local neural TTS)
  *   espeak   (robotic fallback, always present)
  *
- * STT backends tried in order:
- *   whisper.cpp   (whisper-cli, local, offline — needs a ggml model,
+ * STT backends tried in order (first available wins):
+ *   Groq API      (GROQ_API_KEY, OpenAI-compatible, whisper-large-v3-turbo,
+ *                  Persian, free tier, zero local deps)
+ *   OpenAI API    (OPENAI_API_KEY, whisper-1)
+ *   Vosk          (vosk-transcriber CLI + a small model, ~42MB fa model,
+ *                  set VOSK_MODEL — offline, no PyTorch)
+ *   whisper.cpp   (whisper-cli, local fallback — ggml-tiny.bin ~75MB,
  *                  set WHISPER_MODEL or it looks in common paths)
- *   openai-whisper (whisper CLI, pip install openai-whisper)
- *   faster-whisper (whisper-ctranslate2 CLI)
- *   OpenAI Whisper API (if OPENAI_API_KEY is set)
  *
  * Env: TG_BOT_TOKEN + TG_CHAT (+ TG_THREAD for forum topics).
- *      WHISPER_MODEL — path to a whisper.cpp ggml model.
- *      STT_LANG      — transcription language (default "fa").
+ *      GROQ_API_KEY   — Groq API key (highest-priority STT backend).
+ *      OPENAI_API_KEY — OpenAI Whisper API key.
+ *      VOSK_MODEL     — path to a Vosk model dir (e.g. vosk-model-small-fa-0.5).
+ *      WHISPER_MODEL  — path to a whisper.cpp ggml model.
+ *      STT_LANG       — transcription language (default "fa").
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -74,9 +79,44 @@ function whisperModel(): string | null {
 		return process.env.WHISPER_MODEL;
 	const home = process.env.HOME ?? "/root";
 	for (const p of [
+		`${home}/.local/share/whisper.cpp/ggml-tiny.bin`,
 		`${home}/.local/share/whisper.cpp/ggml-base.bin`,
 		`${home}/.local/share/whisper.cpp/ggml-small.bin`,
+		"/usr/local/share/whisper.cpp/ggml-tiny.bin",
 		"/usr/local/share/whisper.cpp/ggml-base.bin",
+	])
+		if (existsSync(p)) return p;
+	return null;
+}
+
+/** POST audio to an OpenAI-compatible /audio/transcriptions endpoint. */
+async function whisperApi(file: string, url: string, key: string, model: string, lang: string): Promise<string | null> {
+	const fd = new FormData();
+	const data = new Uint8Array(await (await import("node:fs/promises")).readFile(file));
+	fd.append("file", new Blob([data]), file.split("/").pop() ?? "audio.oga");
+	fd.append("model", model);
+	fd.append("language", lang);
+	try {
+		const r = await fetch(url, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${key}` },
+			body: fd,
+		});
+		if (!r.ok) return null;
+		const j = await r.json();
+		return j.text?.trim() || null;
+	} catch {
+		return null;
+	}
+}
+
+function voskModel(): string | null {
+	if (process.env.VOSK_MODEL && existsSync(process.env.VOSK_MODEL))
+		return process.env.VOSK_MODEL;
+	const home = process.env.HOME ?? "/root";
+	for (const p of [
+		`${home}/.local/share/vosk/vosk-model-small-fa-0.5`,
+		"/usr/local/share/vosk/vosk-model-small-fa-0.5",
 	])
 		if (existsSync(p)) return p;
 	return null;
@@ -84,7 +124,41 @@ function whisperModel(): string | null {
 
 async function transcribe(file: string): Promise<string | null> {
 	const lang = process.env.STT_LANG ?? "fa";
-	// whisper.cpp — preferred: fully local, no python
+	// 1. Groq API — OpenAI-compatible, free tier, no local deps. Sends the
+	//    original file straight through — no ffmpeg conversion needed.
+	if (process.env.GROQ_API_KEY) {
+		const out = await whisperApi(
+			file,
+			"https://api.groq.com/openai/v1/audio/transcriptions",
+			process.env.GROQ_API_KEY,
+			process.env.GROQ_STT_MODEL ?? "whisper-large-v3-turbo",
+			lang,
+		);
+		if (out) return out;
+	}
+	// 2. OpenAI Whisper API
+	if (process.env.OPENAI_API_KEY) {
+		const out = await whisperApi(
+			file,
+			"https://api.openai.com/v1/audio/transcriptions",
+			process.env.OPENAI_API_KEY,
+			"whisper-1",
+			lang,
+		);
+		if (out) return out;
+	}
+	// 3. Vosk — offline, ~42MB fa model, no PyTorch (pip install vosk-transcriber)
+	const vosk = voskModel();
+	if (vosk) {
+		const txt = `${file}.vosk.txt`;
+		const code = await sh("vosk-transcriber", ["-m", vosk, "-i", file, "-o", txt, "-t", "txt"]);
+		if (code === 0 && existsSync(txt)) {
+			const t = readFileSync(txt, "utf8").trim();
+			try { unlinkSync(txt); } catch { /* ok */ }
+			if (t) return t;
+		}
+	}
+	// 4. whisper.cpp — local fallback, ggml-tiny is enough
 	const model = whisperModel();
 	if (model) {
 		const wav = await toWav(file);
@@ -97,47 +171,6 @@ async function transcribe(file: string): Promise<string | null> {
 			} finally {
 				try { unlinkSync(wav); } catch { /* ok */ }
 			}
-		}
-	}
-	// openai-whisper CLI — prints transcript on stdout with --output_format txt
-	{
-		const out = await shOut("whisper", [file, "--language", lang === "fa" ? "fa" : lang, "--model", "base", "--output_format", "txt", "--output_dir", tmpdir()]);
-		if (out !== null) {
-			const txt = join(tmpdir(), `${file.split("/").pop()!.replace(/\.[^.]+$/, "")}.txt`);
-			if (existsSync(txt)) {
-				const t = readFileSync(txt, "utf8").trim();
-				try { unlinkSync(txt); } catch { /* ok */ }
-				if (t) return t;
-			}
-		}
-	}
-	// faster-whisper via whisper-ctranslate2
-	{
-		const out = await shOut("whisper-ctranslate2", [file, "--language", lang, "--model", "base", "--output_format", "txt", "--output_dir", tmpdir()]);
-		if (out !== null) {
-			const txt = join(tmpdir(), `${file.split("/").pop()!.replace(/\.[^.]+$/, "")}.txt`);
-			if (existsSync(txt)) {
-				const t = readFileSync(txt, "utf8").trim();
-				try { unlinkSync(txt); } catch { /* ok */ }
-				if (t) return t;
-			}
-		}
-	}
-	// OpenAI Whisper API — last resort, needs a key
-	if (process.env.OPENAI_API_KEY) {
-		const fd = new FormData();
-		const data = new Uint8Array(await (await import("node:fs/promises")).readFile(file));
-		fd.append("file", new Blob([data]), file.split("/").pop() ?? "audio.oga");
-		fd.append("model", "whisper-1");
-		fd.append("language", lang);
-		const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-			method: "POST",
-			headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-			body: fd,
-		});
-		if (r.ok) {
-			const j = await r.json();
-			if (j.text?.trim()) return j.text.trim();
 		}
 	}
 	return null;
@@ -213,7 +246,7 @@ export default function piVoice(pi: ExtensionAPI) {
 		label: "Telegram Transcribe",
 		description:
 			"Transcribe a Telegram voice/audio message to text — pass its file_id. " +
-			"Backends tried in order: whisper.cpp → openai-whisper → faster-whisper → OpenAI API. " +
+			"Backends tried in order: Groq API → OpenAI API → Vosk → whisper.cpp. " +
 			"Language defaults to Persian (STT_LANG env to override).",
 		promptSnippet: "Transcribe a voice message",
 		parameters: Type.Object({
@@ -235,7 +268,7 @@ export default function piVoice(pi: ExtensionAPI) {
 						type: "text" as const,
 						text: text
 							? text
-							: "(no STT backend — install whisper.cpp + a ggml model, or pip install openai-whisper)",
+							: "(no STT backend — set GROQ_API_KEY/OPENAI_API_KEY, or install Vosk / whisper.cpp + a model)",
 					}],
 				};
 			} finally {
