@@ -1,1 +1,28 @@
-{"name":"pi-voice","version":"1.0.0","description":"Pi extension","keywords":["pi-package","pi-extension"],"license":"MIT","repository":"mohammadraufzahed/pi-voice","pi":{"extensions":["./extensions/index.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*","typebox":"*"}}
+{
+  "name": "pi-voice",
+  "version": "1.0.0",
+  "description": "Pi extension",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "license": "MIT",
+  "repository": "mohammadraufzahed/pi-voice",
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

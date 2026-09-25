@@ -213,6 +213,7 @@ export default function piVoice(pi: ExtensionAPI) {
 						type: "text" as const,
 						text: "(no TTS backend — install edge-tts: pip install edge-tts)",
 					}],
+					details: {},
 				};
 			try {
 				const token = process.env.TG_BOT_TOKEN;
@@ -234,6 +235,7 @@ export default function piVoice(pi: ExtensionAPI) {
 						type: "text" as const,
 						text: j.ok ? "voice sent 🎙" : `failed: ${JSON.stringify(j)}`,
 					}],
+					details: {},
 				};
 			} finally {
 				try { unlinkSync(file); } catch { /* ok */ }
@@ -260,6 +262,7 @@ export default function piVoice(pi: ExtensionAPI) {
 						type: "text" as const,
 						text: "(could not download file — check file_id and TG_BOT_TOKEN)",
 					}],
+					details: {},
 				};
 			try {
 				const text = await transcribe(file);
@@ -270,6 +273,7 @@ export default function piVoice(pi: ExtensionAPI) {
 							? text
 							: "(no STT backend — set GROQ_API_KEY/OPENAI_API_KEY, or install Vosk / whisper.cpp + a model)",
 					}],
+					details: {},
 				};
 			} finally {
 				try { unlinkSync(file); } catch { /* ok */ }
